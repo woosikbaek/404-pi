@@ -101,7 +101,6 @@ def on_message(client, userdata, msg):
         log_message(f"수신 ({msg.topic}) : {payload}")
 
         command = payload.get("command")
-        print(msg.topic, TOPIC_POWER)
         # 카메라 전원 제어
         if msg.topic == TOPIC_POWER:
             if command == "POWER_ON":
