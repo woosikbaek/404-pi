@@ -1,5 +1,5 @@
-# Created by https://www.toptal.com/developers/gitignore/api/python,windows,visualstudiocode
-# Edit at https://www.toptal.com/developers/gitignore?templates=python,windows,visualstudiocode
+# Created by https://www.toptal.com/developers/gitignore/api/visualstudiocode,python,windows
+# Edit at https://www.toptal.com/developers/gitignore?templates=visualstudiocode,python,windows
 
 ### Python ###
 # Byte-compiled / optimized / DLL files
@@ -218,4 +218,4 @@ $RECYCLE.BIN/
 # Windows shortcuts
 *.lnk
 
-# End of https://www.toptal.com/developers/gitignore/api/python,windows,visualstudiocode
+# End of https://www.toptal.com/developers/gitignore/api/visualstudiocode,python,windows
