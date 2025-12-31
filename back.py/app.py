@@ -230,8 +230,9 @@ async def drive_sequence():
     drive_running = True
     print("▶ 주행 시작")
     bt.clear_received_messages()
+    print("⏳ 10초 대기 중...")
+    await asyncio.sleep(10)
     
-    # 명령 전송
     success = await bt.send_command("CMD:DRIVE_START")
     
     if not success:

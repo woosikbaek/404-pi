@@ -31,7 +31,7 @@ camera_power = False
 
 auto_capture_thread = None
 auto_capture_running = False
-CAPTURE_INTERVAL = 5  # 초
+CAPTURE_INTERVAL = 7  # 초
 
 # ======================
 # 로그
