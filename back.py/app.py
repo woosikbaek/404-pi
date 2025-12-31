@@ -11,10 +11,10 @@ import bluetooth_manager as bt
 MQTT_BROKER = "localhost"
 MQTT_PORT = 1883
 
-TOPIC_SENSOR_CONTROL = "sensor/control"
+TOPIC_SENSOR_CONTROL = "ult01"
 TOPIC_SENSOR_RESULT  = "sensor/result"
 
-TOPIC_DRIVE_CONTROL  = "arm/complete"
+TOPIC_DRIVE_CONTROL  = "ult02"
 TOPIC_DRIVE_STOP     = "drive/stop"  
 TOPIC_DRIVE_RESULT   = "sensor/result"
 
@@ -80,17 +80,57 @@ def parse_result(msg: str):
 # =====================
 # Maqueen 명령 + 응답 대기
 # =====================
-async def send_and_wait(cmd, timeout=10.0):
+async def send_and_wait(cmd, timeout=15.0):
+    """
+    명령 전송 후 특정 장치의 응답만 대기
+    
+    Args:
+        cmd (str): 전송할 명령 (예: "LED", "BUZ", "ULT")
+        timeout (float): 타임아웃 시간 (초) - LED 3번 점검을 위해 15초로 증가
+    
+    Returns:
+        dict: 파싱된 결과 또는 None
+    """
+    # 명령에 해당하는 장치 필터 설정
+    device_filter_map = {
+        "LED": "LED",
+        "BUZ": "BUZZER",
+        "ULT": "ULTRASONIC"
+    }
+    device_filter = device_filter_map.get(cmd)
+    
     bt.clear_received_messages()
     await bt.send_command(cmd)
+    
+    # 마이크로빗이 명령을 받고 처리할 시간 확보
+    await asyncio.sleep(0.5)
 
+    seen_messages = set()  # 이미 본 메시지 추적
     limit = int(timeout / 0.1)
+    
     for _ in range(limit):
         msgs = bt.get_received_messages()
+        
         for msg in msgs:
-            parsed = parse_result(msg)
-            if parsed:
-                return parsed
+            # 이미 본 메시지는 건너뛰기
+            if msg in seen_messages:
+                continue
+            seen_messages.add(msg)
+            
+            # RESULT:로 시작하는 완전한 메시지만 파싱
+            for line in msg.split("\n"):
+                line = line.strip()
+                if not line or not line.startswith("RESULT:"):
+                    continue
+                
+                parsed = parse_result(line)
+                if parsed:
+                    # 해당 장치의 응답만 반환 (필터링!)
+                    if device_filter and parsed["payload"]["device"] == device_filter:
+                        bt.clear_received_messages()  # 응답 수신 후 버퍼 클리어
+                        return parsed
+                    # 필터와 매칭되지 않으면 계속 대기 (다른 장치의 응답은 무시)
+        
         await asyncio.sleep(0.1)
 
     return None
@@ -111,7 +151,6 @@ async def wait_for_result(device_filter=None, timeout=10.0):
     all_messages = ""
     seen_messages = set()  # 이미 본 메시지 추적
     limit = int(timeout / 0.1)
-    
     for i in range(limit):
         msgs = bt.get_received_messages()
         
@@ -153,10 +192,12 @@ async def wait_for_result(device_filter=None, timeout=10.0):
 # =====================
 async def auto_check():
     global checking_in_progress
+    await asyncio.sleep(1.5)
     checking_in_progress = True
 
-    for cmd in ["LED", "BUZ", "ULT"]:
-        result = await send_and_wait(cmd, timeout=8)
+    for cmd in ["BUZ", "ULT", "LED"]:
+        timeout = 20 if cmd == "LED" else 10
+        result = await send_and_wait(cmd, timeout=timeout)  # LED 3번 점검을 위해 타임아웃 증가
 
         if result:
             mqtt_client.publish(

@@ -113,12 +113,13 @@ def auto_capture_loop():
 
     while auto_capture_running:
         try:
+            # ✅ 동시에 두 카메라에서 프레임 읽기
             ret1, frame1 = cams[1].read()
             ret2, frame2 = cams[2].read()
 
             if ret1 and ret2:
-                send_image(frame1, "camera01")
-                send_image(frame2, "camera02")
+                # ✅ 같은 시간에 찍은 이미지 2개를 하나의 리스트로 묶어서 전송
+                send_images_together(frame1, frame2)
             else:
                 log("프레임 수신 실패", "WARNING")
 
@@ -154,13 +155,20 @@ def stop_auto_capture():
 # ======================
 # 이미지 전송
 # ======================
-def send_image(frame, camera_id):
+
+
+def send_images_together(frame1, frame2):
+    """같은 시간에 찍은 이미지 2개를 하나의 리스트로 묶어서 전송"""
+    timestamp = time.time()
     payload = {
-        "timestamp": time.time(),
-        "image": encode_png(frame)
+        "timestamp": timestamp,
+        "images": [
+            encode_png(frame1),
+            encode_png(frame2)
+        ]
     }
     mqtt_client.publish(TOPIC_CAMERA_SEND, json.dumps(payload))
-    log(f"{camera_id} 이미지 전송 완료")
+    log(f"이미지 2개 전송 완료 (camera01, camera02, timestamp: {timestamp})")
 
 # ======================
 # MQTT 콜백
