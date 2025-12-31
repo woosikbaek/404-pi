@@ -40,7 +40,7 @@
 - 초음파 센서 (HC-SR04)
 
 ### 소프트웨어
-- Python 3.7+
+- Python 3.13
 - MQTT Broker (Mosquitto)
 - OpenCV (cv2)
 - Bluetooth 지원
