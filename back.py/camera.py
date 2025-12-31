@@ -1,9 +1,9 @@
-# 카메라 전원 on/off + 촬영 제어 모듈
 import cv2
 import paho.mqtt.client as mqtt
 import json
 import time
 import base64
+import threading
 from datetime import datetime
 
 # ======================
@@ -13,111 +13,183 @@ MQTT_BROKER = "localhost"
 MQTT_PORT = 1883
 
 TOPIC_POWER = "power/control"
-TOPIC_CAPTURE = "camera/capture"
 TOPIC_CAMERA_SEND = "camera01/control"
 
 # ======================
-# 전역 상태 변수
+# 카메라 디바이스 고정 (USB 웹캠 2개)
 # ======================
-camera = None
+CAMERA_DEVICES = {
+    1: 0,
+    2: 2
+}
+
+# ======================
+# 전역 상태
+# ======================
+cams = {1: None, 2: None}
 camera_power = False
 
-# ======================
-# 로그 함수
-# ======================
-def log_message(message, level="INFO"):
-    timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    print(f"[{timestamp}] [{level}] {message}")
+auto_capture_thread = None
+auto_capture_running = False
+CAPTURE_INTERVAL = 7  # 초
 
 # ======================
-# 이미지 인코딩
+# 로그
 # ======================
-def encode_image_to_base64(image, max_width=320, quality=85):
+def log(msg, level="INFO"):
+    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [{level}] {msg}")
+
+# ======================
+# 이미지 인코딩 (PNG 유지)
+# ======================
+def encode_png(image, max_width=320):
     h, w = image.shape[:2]
-
     if w > max_width:
         scale = max_width / w
         image = cv2.resize(image, (max_width, int(h * scale)))
 
-    _, buffer = cv2.imencode(".jpg", image, [int(cv2.IMWRITE_JPEG_QUALITY), quality])
-    return base64.b64encode(buffer).decode("utf-8")
+    _, buffer = cv2.imencode(".png", image)
+    return base64.b64encode(buffer).decode()
 
 # ======================
-# 카메라 제어 함수
+# 카메라 전원 ON
 # ======================
 def camera_power_on():
-    global camera, camera_power
-    if not camera_power:
-        camera = cv2.VideoCapture(-1)  # -1로 자동 감지
-        log_message("카메라 전원 ON 시도")
-        time.sleep(1)  # 카메라 워밍업
-        if not camera.isOpened():
-            log_message("카메라 열기 실패", "ERROR")
-            camera.release()
-            camera = None
-            return
-        camera_power = True
-        log_message("카메라 전원 ON 완료")
+    global camera_power, cams
 
-def camera_power_off():
-    global camera, camera_power
     if camera_power:
-        camera.release()
-        camera = None
-        camera_power = False
-
-def capture_and_send_image():
-    if not camera_power or camera is None:
-        log_message("카메라가 꺼져 있어 촬영 불가", "WARNING")
+        log("카메라 이미 ON 상태")
         return
 
-    ret, frame = camera.read()
-    if not ret:
-        log_message("사진 촬영 실패", "ERROR")
-        return
+    log("카메라 전원 ON 시작")
 
-    img_base64 = encode_image_to_base64(frame)
+    for num in [1, 2]:
+        index = CAMERA_DEVICES[num]
+        cam = cv2.VideoCapture(index, cv2.CAP_V4L2)
+        cam.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+        cam.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+        cam.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+        cam.set(cv2.CAP_PROP_FPS, 15)
+        cam.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
-    message = {
-        "camera_id": "camera01",
-        "timestamp": time.time(),
-        "image": img_base64
+        time.sleep(2.0)  # 워밍업
+
+        ret, _ = cam.read()
+        if not ret:
+            log(f"카메라 {num} 열기 실패 (index: {index})", "ERROR")
+            cam.release()
+            camera_power_off()
+            return
+
+        cams[num] = cam
+        log(f"카메라 {num} ON 완료")
+
+    camera_power = True
+    start_auto_capture()
+
+# ======================
+# 카메라 전원 OFF
+# ======================
+def camera_power_off():
+    global camera_power, cams
+
+    stop_auto_capture()
+
+    for num in [1, 2]:
+        if cams[num]:
+            cams[num].release()
+            cams[num] = None
+            log(f"카메라 {num} OFF")
+
+    camera_power = False
+
+# ======================
+# 자동 촬영 루프
+# ======================
+def auto_capture_loop():
+    global auto_capture_running
+
+    log("자동 촬영 시작")
+
+    while auto_capture_running:
+        try:
+            # ✅ 동시에 두 카메라에서 프레임 읽기
+            ret1, frame1 = cams[1].read()
+            ret2, frame2 = cams[2].read()
+
+            if ret1 and ret2:
+                # ✅ 같은 시간에 찍은 이미지 2개를 하나의 리스트로 묶어서 전송
+                send_images_together(frame1, frame2)
+            else:
+                log("프레임 수신 실패", "WARNING")
+
+            for _ in range(CAPTURE_INTERVAL):
+                if not auto_capture_running:
+                    break
+                time.sleep(1)
+
+        except Exception as e:
+            log(f"자동 촬영 오류: {e}", "ERROR")
+            time.sleep(1)
+
+    log("자동 촬영 종료")
+
+def start_auto_capture():
+    global auto_capture_running, auto_capture_thread
+
+    if not auto_capture_running:
+        auto_capture_running = True
+        auto_capture_thread = threading.Thread(
+            target=auto_capture_loop, daemon=True
+        )
+        auto_capture_thread.start()
+
+def stop_auto_capture():
+    global auto_capture_running, auto_capture_thread
+
+    if auto_capture_running:
+        auto_capture_running = False
+        if auto_capture_thread:
+            auto_capture_thread.join(timeout=2)
+
+# ======================
+# 이미지 전송
+# ======================
+
+
+def send_images_together(frame1, frame2):
+    """같은 시간에 찍은 이미지 2개를 하나의 리스트로 묶어서 전송"""
+    timestamp = time.time()
+    payload = {
+        "timestamp": timestamp,
+        "images": [
+            encode_png(frame1),
+            encode_png(frame2)
+        ]
     }
-
-    mqtt_client.publish(TOPIC_CAMERA_SEND, json.dumps(message))
-    log_message("사진 촬영 후 AI 서버로 전송 완료")
+    mqtt_client.publish(TOPIC_CAMERA_SEND, json.dumps(payload))
+    log(f"이미지 2개 전송 완료 (camera01, camera02, timestamp: {timestamp})")
 
 # ======================
 # MQTT 콜백
 # ======================
 def on_connect(client, userdata, flags, rc):
-    log_message("MQTT 브로커 연결 완료")
+    log("MQTT 연결 완료")
     client.subscribe(TOPIC_POWER)
-    client.subscribe(TOPIC_CAPTURE)
 
 def on_message(client, userdata, msg):
     try:
         payload = json.loads(msg.payload.decode())
-        log_message(f"수신 ({msg.topic}) : {payload}")
-
         command = payload.get("command")
-        print(msg.topic, TOPIC_POWER)
-        # 카메라 전원 제어
+
         if msg.topic == TOPIC_POWER:
             if command == "POWER_ON":
                 camera_power_on()
-                log_message("카메라 전원 ON 명령 처리 완료")
             elif command == "POWER_OFF":
                 camera_power_off()
-                log_message("카메라 전원 OFF 명령 처리 완료")
-
-        # 촬영 명령
-        if msg.topic == TOPIC_CAPTURE:
-            if command == "CAMERA_CAPTURE":
-              capture_and_send_image()
 
     except Exception as e:
-        log_message(f"메시지 처리 오류: {e}", "ERROR")
+        log(f"MQTT 처리 오류: {e}", "ERROR")
 
 # ======================
 # 메인
@@ -127,7 +199,7 @@ mqtt_client.on_connect = on_connect
 mqtt_client.on_message = on_message
 
 def main():
-    log_message("카메라 전원/촬영 제어 모듈 시작")
+    log("카메라 제어 모듈 시작")
     mqtt_client.connect(MQTT_BROKER, MQTT_PORT, 60)
     mqtt_client.loop_forever()
 
